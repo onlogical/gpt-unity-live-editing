@@ -6,15 +6,18 @@ if(Test-Path (Join-Path $bridgeRoot 'request.json')) { throw 'Another command is
 $null = & $client -ProjectPath $ProjectPath -Action ping
 $lockId=[guid]::NewGuid().ToString()
 $testName='Bridge Lock Regression '+$lockId
-$lockStream=[IO.File]::Open((Join-Path $bridgeRoot 'response.json'),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+$responseFolder=Join-Path $bridgeRoot 'responses'
+New-Item -ItemType Directory -Force $responseFolder | Out-Null
+$replyPath=Join-Path $responseFolder ($lockId+'.json')
+$lockStream=[IO.File]::Open(($replyPath+'.tmp'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::Read,[IO.FileShare]::Read)
 try {
     $request=@{id=$lockId;action='create_empty';name=$testName} | ConvertTo-Json
     [IO.File]::WriteAllText((Join-Path $bridgeRoot 'lock-test.tmp'),$request)
-    Move-Item -LiteralPath (Join-Path $bridgeRoot 'lock-test.tmp') -Destination (Join-Path $bridgeRoot 'request.json')
+    Move-Item -LiteralPath (Join-Path $bridgeRoot 'lock-test.tmp') -Destination (Join-Path $bridgeRoot ('queue/0000000000000000-'+$lockId+'.json'))
     Start-Sleep -Milliseconds 1200
 } finally { $lockStream.Dispose() }
 $deadline=[DateTime]::UtcNow.AddSeconds(10)
-do { Start-Sleep -Milliseconds 200; $reply=Get-Content -Raw (Join-Path $bridgeRoot 'response.json') | ConvertFrom-Json } while($reply.id -ne $lockId -and [DateTime]::UtcNow -lt $deadline)
+do { Start-Sleep -Milliseconds 200; $reply=if(Test-Path -LiteralPath $replyPath) { Get-Content -Raw $replyPath | ConvertFrom-Json } else { $null } } while($reply.id -ne $lockId -and [DateTime]::UtcNow -lt $deadline)
 if($reply.id -ne $lockId -or !$reply.ok) { throw 'Locked response retry failed.' }
 try {
     $hierarchy=(& $client -ProjectPath $ProjectPath -Action hierarchy) | ConvertFrom-Json

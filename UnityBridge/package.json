@@ -1,13 +1,20 @@
 {
   "name": "com.community.unity-live-bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "displayName": "Unity Live Bridge",
   "description": "Local file-based Unity editor automation for coding assistants. Create objects, inspect components, edit serialized properties and manage scripts without desktop automation.",
-  "unity": "6000.5",
+  "unity": "6000.0",
   "license": "MIT",
   "keywords": [
     "editor",
     "automation",
     "bridge"
+  ],
+  "samples": [
+    {
+      "description": "Three animated sculptures with Inspector fields, scene references and arrays to edit.",
+      "displayName": "Live Editing Demo",
+      "path": "Samples~/Live Editing Demo"
+    }
   ]
 }

@@ -1,8 +1,12 @@
 {
   "name": "UnityLiveBridge.Editor",
   "rootNamespace": "",
-  "references": [],
-  "includePlatforms": ["Editor"],
+  "references": [
+    "UnityLiveBridge.Runtime"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
   "excludePlatforms": [],
   "allowUnsafeCode": false,
   "overrideReferences": false,

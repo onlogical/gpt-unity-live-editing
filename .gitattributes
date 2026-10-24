@@ -1,0 +1,4 @@
+# Unity emits empty YAML fields with trailing spaces; keep its canonical output.
+*.meta -whitespace
+*.unity -whitespace
+*.mat -whitespace

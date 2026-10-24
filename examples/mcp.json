@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "unity-live-editing": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/gpt-unity-live-editing/mcp/server.mjs",
+        "--project",
+        "/absolute/path/to/UnityProject"
+      ]
+    }
+  }
+}

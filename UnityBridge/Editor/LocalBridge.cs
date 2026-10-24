@@ -8,13 +8,15 @@ using UnityEditor.SceneManagement;
 [InitializeOnLoad]
 public static partial class LocalBridge
 {
-    [Serializable] public class Request { public string id, action, name, primitive, scenePath; public string instanceId, componentId, componentType, propertyPath, value, assetPath, source, parentId, referenceId; public int componentIndex, arraySize, materialIndex; public bool worldPositionStays = true; public Vector3 position, rotation; public Vector3 scale = Vector3.one; }
+    [Serializable] public class Command { public string id, action, name, primitive, scenePath; public string label, targetId; public string instanceId, componentId, componentType, propertyPath, value, assetPath, source, parentId, referenceId; public int componentIndex, arraySize, materialIndex; public bool worldPositionStays = true; public Vector3 position, rotation; public Vector3 scale = Vector3.one; }
+    [Serializable] public class Request : Command { public Command[] commands; }
+    [Serializable] public class StepReply { public string id, action, error, instanceId, outcome; public bool ok; public List<PropertyInfo> properties = new List<PropertyInfo>(); public List<ComponentInfo> componentDetails = new List<ComponentInfo>(); public List<Item> objects = new List<Item>(); }
     [Serializable] public class Item { public string instanceId, parentId; public string name; public Vector3 position, rotation, scale; }
     [Serializable] public class ComponentInfo { public string id, type; public int index; }
-    [Serializable] public class Reply { public string id, action, error, timestamp, lastAction, lastCommandId, lastCommandAt; public bool ok, playing, compiling, updating, lastCommandOk; public string instanceId; public List<PropertyInfo> properties = new List<PropertyInfo>(); public List<ComponentInfo> componentDetails = new List<ComponentInfo>(); public List<string> components = new List<string>(); public List<Item> objects = new List<Item>(); public List<string> errors = new List<string>(); }
+    [Serializable] public class Reply { public string id, action, error, timestamp, lastAction, lastCommandId, lastCommandAt; public string unityVersion, outcome, scenePath; public int protocolVersion, queueDepth; public List<StepReply> results = new List<StepReply>(); public bool ok, playing, compiling, updating, lastCommandOk; public string instanceId; public List<PropertyInfo> properties = new List<PropertyInfo>(); public List<ComponentInfo> componentDetails = new List<ComponentInfo>(); public List<string> components = new List<string>(); public List<Item> objects = new List<Item>(); public List<string> errors = new List<string>(); }
     [Serializable] public class PropertyInfo { public string path, type, value, referenceId; public bool editable, supported, isArray; public int arraySize; }
     static GameObject FindObject(string id) {
-        foreach(var go in UnityEngine.Object.FindObjectsByType<GameObject>(FindObjectsInactive.Include,FindObjectsSortMode.None)) if(go.GetEntityId().ToString() == id) return go;
+        foreach(var go in UnityEngine.Object.FindObjectsByType<GameObject>(FindObjectsInactive.Include,FindObjectsSortMode.None)) if(ObjectId(go) == id) return go;
         throw new ArgumentException("Scene object not found: " + id);
     }
     static Type ComponentType(string name) {
@@ -34,7 +36,7 @@ public static partial class LocalBridge
         foreach(var comp in go.GetComponents<Component>()) if(comp != null) {
             var type = comp.GetType(); int index = counts.TryGetValue(type,out int count) ? count : 0; counts[type] = index + 1;
             reply.components.Add(type.FullName);
-            reply.componentDetails.Add(new ComponentInfo { id = comp.GetEntityId().ToString(), type = type.FullName, index = index });
+            reply.componentDetails.Add(new ComponentInfo { id = ObjectId(comp), type = type.FullName, index = index });
         }
         UnityEngine.Object target = ResolveTarget(go,request);
         if(target == null) throw new ArgumentException("Component not found on object.");
@@ -44,6 +46,7 @@ public static partial class LocalBridge
             if(property == null || !property.editable) throw new ArgumentException("Property is missing or read-only.");
             Undo.RecordObject(target,"Bridge inspector edit");
             switch(property.propertyType) {
+                case SerializedPropertyType.LayerMask: property.intValue = int.Parse(request.value,System.Globalization.CultureInfo.InvariantCulture); break;
                 case SerializedPropertyType.ArraySize:
                     int size = int.Parse(request.value); if(size < 0 || size > 10000) throw new ArgumentOutOfRangeException("Array size must be 0..10000."); property.intValue = size; break;
                 case SerializedPropertyType.Integer: property.longValue = long.Parse(request.value,System.Globalization.CultureInfo.InvariantCulture); break;
@@ -69,6 +72,7 @@ public static partial class LocalBridge
         while(iterator.NextVisible(true)) {
             string value = "";
             switch(iterator.propertyType) {
+                case SerializedPropertyType.LayerMask: value = iterator.intValue.ToString(); break;
                 case SerializedPropertyType.ArraySize: value = iterator.intValue.ToString(); break;
                 case SerializedPropertyType.Integer: value = iterator.longValue.ToString(); break;
                 case SerializedPropertyType.Float: value = iterator.doubleValue.ToString(System.Globalization.CultureInfo.InvariantCulture); break;
@@ -79,7 +83,7 @@ public static partial class LocalBridge
                 case SerializedPropertyType.Enum: value = iterator.enumValueIndex >= 0 && iterator.enumValueIndex < iterator.enumNames.Length ? iterator.enumNames[iterator.enumValueIndex] : ""; break;
                 case SerializedPropertyType.ObjectReference: value = iterator.objectReferenceValue == null ? "null" : AssetDatabase.GetAssetPath(iterator.objectReferenceValue); break;
             }
-            reply.properties.Add(new PropertyInfo { path = iterator.propertyPath, type = iterator.propertyType.ToString(), value = value, editable = iterator.editable, supported = CanWrite(iterator.propertyType), isArray = iterator.isArray && iterator.propertyType != SerializedPropertyType.String, arraySize = iterator.isArray && iterator.propertyType != SerializedPropertyType.String ? iterator.arraySize : 0, referenceId = iterator.propertyType == SerializedPropertyType.ObjectReference && iterator.objectReferenceValue != null ? iterator.objectReferenceValue.GetEntityId().ToString() : "" });
+            reply.properties.Add(new PropertyInfo { path = iterator.propertyPath, type = iterator.propertyType.ToString(), value = value, editable = iterator.editable, supported = CanWrite(iterator.propertyType), isArray = iterator.isArray && iterator.propertyType != SerializedPropertyType.String, arraySize = iterator.isArray && iterator.propertyType != SerializedPropertyType.String ? iterator.arraySize : 0, referenceId = iterator.propertyType == SerializedPropertyType.ObjectReference && iterator.objectReferenceValue != null ? ObjectId(iterator.objectReferenceValue) : "" });
         }
     }
     static string Root => Path.GetFullPath(Path.Combine(Application.dataPath, "../.codex-bridge"));
@@ -90,13 +94,13 @@ public static partial class LocalBridge
     static Reply pendingReply;
     static bool Write(string name, Reply reply) {
         try {
-            Directory.CreateDirectory(Root); var path = Path.Combine(Root,name);
+            Directory.CreateDirectory(Root); var path = Path.Combine(Root,name); Directory.CreateDirectory(Path.GetDirectoryName(path));
             File.WriteAllText(path + ".tmp",JsonUtility.ToJson(reply,true));
             if(File.Exists(path)) File.Replace(path + ".tmp",path,null); else File.Move(path + ".tmp",path);
             return true;
         } catch(IOException) { return false; } // Readers or antivirus may briefly hold a Windows file handle. Retry on the next tick.
     }
-    static Reply Status() => new Reply { ok = true, playing = EditorApplication.isPlaying, compiling = EditorApplication.isCompiling, updating = EditorApplication.isUpdating, timestamp = DateTime.UtcNow.ToString("o"), errors = new List<string>(errors), lastAction = SessionState.GetString("LiveBridge.action",""), lastCommandId = SessionState.GetString("LiveBridge.id",""), lastCommandAt = SessionState.GetString("LiveBridge.at",""), lastCommandOk = SessionState.GetBool("LiveBridge.ok",true) };
+    static Reply Status() => new Reply { ok = true, protocolVersion = 2, unityVersion = Application.unityVersion, queueDepth = QueueDepth(), playing = EditorApplication.isPlaying, compiling = EditorApplication.isCompiling, updating = EditorApplication.isUpdating, timestamp = DateTime.UtcNow.ToString("o"), errors = new List<string>(errors), lastAction = SessionState.GetString("LiveBridge.action",""), lastCommandId = SessionState.GetString("LiveBridge.id",""), lastCommandAt = SessionState.GetString("LiveBridge.at",""), lastCommandOk = SessionState.GetBool("LiveBridge.ok",true) };
     [MenuItem("Tools/Local Unity Bridge/Status")]
     static void ShowStatus() { BridgeWindow.Open(); }
     static void Poll() {
@@ -104,22 +108,21 @@ public static partial class LocalBridge
         next = EditorApplication.timeSinceStartup + 0.25;
         if(pendingReply != null) { if(!Write("response.json",pendingReply)) return; pendingReply = null; }
         Write("status.json", Status());
-        string path = Path.Combine(Root,"request.json");
-        if(!File.Exists(path) || EditorApplication.isCompiling || EditorApplication.isUpdating) return;
-        var reply = Status();
+        PollTransport();
+    }
+    static Reply Execute(Request request, bool isolateUndo = true) {
+        var reply = Status(); reply.id = request.id; reply.action = request.action;
         try {
-            var request = JsonUtility.FromJson<Request>(File.ReadAllText(path)); File.Delete(path);
-            reply.id = request.id; reply.action = request.action;
-            if(request.action != "undo") { Undo.IncrementCurrentGroup(); Undo.SetCurrentGroupName("Bridge " + request.action); }
-            if(HandleExtended(request,reply)) { Finish(reply); return; }
+            if(isolateUndo && request.action != "undo") { Undo.IncrementCurrentGroup(); Undo.SetCurrentGroupName("Bridge " + request.action); }
+            if(HandleExtended(request,reply)) return reply;
             switch(request.action) {
                 case "create_empty":
                     if(EditorApplication.isPlaying) throw new InvalidOperationException("Stop Play mode first.");
                     var empty = new GameObject(request.name ?? "New Object"); Undo.RegisterCreatedObjectUndo(empty,"Bridge create empty");
-                    empty.transform.position = request.position; reply.instanceId = empty.GetEntityId().ToString(); EditorSceneManager.MarkSceneDirty(empty.scene); break;
+                    empty.transform.position = request.position; reply.instanceId = ObjectId(empty); EditorSceneManager.MarkSceneDirty(empty.scene); break;
                 case "add_component":
                     if(EditorApplication.isPlaying) throw new InvalidOperationException("Stop Play mode first.");
-                    var owner = FindObject(request.instanceId); var added = Undo.AddComponent(owner,ComponentType(request.componentType)); if(added == null) throw new InvalidOperationException("Unity refused this component."); reply.instanceId = added.GetEntityId().ToString(); EditorSceneManager.MarkSceneDirty(owner.scene); break;
+                    var owner = FindObject(request.instanceId); var added = Undo.AddComponent(owner,ComponentType(request.componentType)); if(added == null) throw new InvalidOperationException("Unity refused this component."); reply.instanceId = ObjectId(added); EditorSceneManager.MarkSceneDirty(owner.scene); break;
                 case "inspect": Inspector(request,reply,false); break;
                 case "set_property":
                     if(EditorApplication.isPlaying) throw new InvalidOperationException("Stop Play mode first.");
@@ -140,20 +143,20 @@ public static partial class LocalBridge
                 case "refresh": AssetDatabase.Refresh(); break;
                 case "hierarchy":
                     foreach(var go in UnityEngine.Object.FindObjectsByType<GameObject>(FindObjectsInactive.Include, FindObjectsSortMode.InstanceID))
-                        if(go.scene.IsValid()) reply.objects.Add(new Item { instanceId = go.GetEntityId().ToString(), parentId = go.transform.parent == null ? "" : go.transform.parent.gameObject.GetEntityId().ToString(), name = go.name, position = go.transform.position, rotation = go.transform.eulerAngles, scale = go.transform.localScale });
+                        if(go.scene.IsValid()) reply.objects.Add(new Item { instanceId = ObjectId(go), parentId = go.transform.parent == null ? "" : ObjectId(go.transform.parent.gameObject), name = go.name, position = go.transform.position, rotation = go.transform.eulerAngles, scale = go.transform.localScale });
                     break;
                 case "create":
                     if(EditorApplication.isPlaying) throw new InvalidOperationException("Stop Play mode before persistent scene edits.");
                     var goNew = GameObject.CreatePrimitive((PrimitiveType)Enum.Parse(typeof(PrimitiveType),request.primitive ?? "Cube",true));
                     Undo.RegisterCreatedObjectUndo(goNew,"Bridge create"); goNew.name = request.name ?? "Bridge Object";
                     goNew.transform.position = request.position; goNew.transform.localScale = request.scale;
-                    Selection.activeGameObject = goNew; reply.instanceId = goNew.GetEntityId().ToString(); EditorSceneManager.MarkSceneDirty(goNew.scene); SceneView.lastActiveSceneView?.FrameSelected(); break;
+                    Selection.activeGameObject = goNew; reply.instanceId = ObjectId(goNew); EditorSceneManager.MarkSceneDirty(goNew.scene); SceneView.lastActiveSceneView?.FrameSelected(); break;
                 case "transform":
                     if(EditorApplication.isPlaying) throw new InvalidOperationException("Stop Play mode before persistent scene edits.");
-                    GameObject target = null; foreach(var candidate in UnityEngine.Object.FindObjectsByType<GameObject>(FindObjectsInactive.Include, FindObjectsSortMode.None)) if(candidate.GetEntityId().ToString() == request.instanceId) { target = candidate; break; }
+                    GameObject target = null; foreach(var candidate in UnityEngine.Object.FindObjectsByType<GameObject>(FindObjectsInactive.Include, FindObjectsSortMode.None)) if(ObjectId(candidate) == request.instanceId) { target = candidate; break; }
                     if(target == null) throw new InvalidOperationException("Object not found.");
                     Undo.RecordObject(target.transform,"Bridge transform"); target.transform.position = request.position; target.transform.localScale = request.scale;
-                    reply.instanceId = target.GetEntityId().ToString(); EditorSceneManager.MarkSceneDirty(target.scene); break;
+                    reply.instanceId = ObjectId(target); EditorSceneManager.MarkSceneDirty(target.scene); break;
                 case "save":
                     if(EditorApplication.isPlaying) throw new InvalidOperationException("Stop Play mode before saving.");
                     if(!string.IsNullOrEmpty(request.scenePath) && (!request.scenePath.StartsWith("Assets/") || !request.scenePath.EndsWith(".unity") || request.scenePath.Contains(".."))) throw new ArgumentException("Use an Assets/ scene path.");
@@ -164,7 +167,8 @@ public static partial class LocalBridge
                 default: throw new ArgumentException("Unknown action: " + request.action);
             }
         } catch(Exception ex) { reply.ok = false; reply.error = ex.ToString(); }
-        Finish(reply);
+        Undo.FlushUndoRecordObjects();
+        return reply;
     }
     static void Finish(Reply reply) {
         Undo.FlushUndoRecordObjects();
@@ -174,5 +178,3 @@ public static partial class LocalBridge
         if(!Write("response.json",reply)) pendingReply = reply;
     }
 }
-
-

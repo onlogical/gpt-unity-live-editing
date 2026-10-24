@@ -1,3 +1,4 @@
 dist/
 .codex-bridge/
 *.tmp
+node_modules/

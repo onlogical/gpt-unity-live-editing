@@ -8,7 +8,7 @@ public static partial class LocalBridge
     static UnityEngine.Object ResolveTarget(GameObject go, Request request) {
         if(!string.IsNullOrEmpty(request.componentId)) {
             foreach(var component in go.GetComponents<Component>())
-                if(component != null && component.GetEntityId().ToString() == request.componentId) return component;
+                if(component != null && ObjectId(component) == request.componentId) return component;
             throw new ArgumentException("Component ID does not belong to this object.");
         }
         if(string.IsNullOrEmpty(request.componentType)) return go;
@@ -20,9 +20,9 @@ public static partial class LocalBridge
     static UnityEngine.Object ResolveReference(Request request) {
         if(!string.IsNullOrEmpty(request.referenceId)) {
             foreach(var go in UnityEngine.Object.FindObjectsByType<GameObject>(FindObjectsInactive.Include,FindObjectsSortMode.None)) {
-                if(go.GetEntityId().ToString() == request.referenceId) return go;
+                if(ObjectId(go) == request.referenceId) return go;
                 foreach(var component in go.GetComponents<Component>())
-                    if(component != null && component.GetEntityId().ToString() == request.referenceId) return component;
+                    if(component != null && ObjectId(component) == request.referenceId) return component;
             }
             throw new ArgumentException("Scene reference not found.");
         }
@@ -36,7 +36,7 @@ public static partial class LocalBridge
         switch(type) {
             case SerializedPropertyType.Integer: case SerializedPropertyType.Float: case SerializedPropertyType.Boolean:
             case SerializedPropertyType.String: case SerializedPropertyType.Enum: case SerializedPropertyType.Vector3:
-            case SerializedPropertyType.Color: case SerializedPropertyType.ObjectReference: case SerializedPropertyType.ArraySize: return true;
+            case SerializedPropertyType.Color: case SerializedPropertyType.ObjectReference: case SerializedPropertyType.ArraySize: case SerializedPropertyType.LayerMask: return true;
             default: return false;
         }
     }
@@ -45,6 +45,7 @@ public static partial class LocalBridge
         switch(request.action) {
             case "open_panel": BridgeWindow.Open(); return true;
             case "clear_errors": errors.Clear(); return true;
+            case "demo": reply.scenePath = CreateDemo(); return true;
             case "rotate": case "rename": case "duplicate": case "delete": case "parent":
             case "assign_material": case "resize_array": case "instantiate_prefab": case "create_material": break;
             default: return false;
@@ -65,10 +66,10 @@ public static partial class LocalBridge
             var instance = (GameObject)PrefabUtility.InstantiatePrefab(asset);
             Undo.RegisterCreatedObjectUndo(instance,"Bridge instantiate prefab"); instance.transform.position = request.position;
             if(!string.IsNullOrEmpty(request.name)) instance.name = request.name;
-            reply.instanceId = instance.GetEntityId().ToString(); EditorSceneManager.MarkSceneDirty(instance.scene); return true;
+            reply.instanceId = ObjectId(instance); EditorSceneManager.MarkSceneDirty(instance.scene); return true;
         }
         var go = FindObject(request.instanceId); var scene = go.scene;
-        reply.instanceId = go.GetEntityId().ToString();
+        reply.instanceId = ObjectId(go);
         switch(request.action) {
             case "rotate": Undo.RecordObject(go.transform,"Bridge rotate"); go.transform.eulerAngles = request.rotation; PrefabUtility.RecordPrefabInstancePropertyModifications(go.transform); break;
             case "rename":
@@ -77,7 +78,7 @@ public static partial class LocalBridge
             case "duplicate":
                 var clone = UnityEngine.Object.Instantiate(go,go.transform.parent); Undo.RegisterCreatedObjectUndo(clone,"Bridge duplicate");
                 clone.name = string.IsNullOrEmpty(request.name) ? go.name + " Copy" : request.name;
-                reply.instanceId = clone.GetEntityId().ToString(); break;
+                reply.instanceId = ObjectId(clone); break;
             case "delete": Undo.DestroyObjectImmediate(go); break;
             case "parent":
                 var parent = string.IsNullOrEmpty(request.parentId) ? null : FindObject(request.parentId).transform;

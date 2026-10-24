@@ -1,0 +1,20 @@
+name: Bridge checks
+on: [push, pull_request]
+jobs:
+  mcp:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [20, 22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: mcp/package-lock.json
+      - run: npm ci --prefix mcp --ignore-scripts
+      - run: npm test --prefix mcp
+      - name: Validate Unity package manifest
+        run: node -e "const p=require('./UnityBridge/package.json'); if(!p.version || !p.name || !p.samples?.length) process.exit(1)"

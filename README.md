@@ -1,95 +1,132 @@
 # GPT Unity Live Editing
 
-A local Unity editor bridge that lets coding assistants edit a Unity project without clicking the editor. Open source under the MIT license.
+Edit Unity through local tools instead of mouse automation. Version **0.3.0** includes a Unity package, a PowerShell client, and a stdio MCP server for assistants. MIT licensed. No OpenAI API key, cloud service or network listener is required.
 
-## What works
+## Install the Unity package
 
-- Create primitive and empty GameObjects; move, scale, rotate, rename, duplicate, delete, and parent them.
-- List scene objects and attached components.
-- Add built-in or custom script components.
-- Read Inspector properties; edit values, scene/asset references, arrays, and lists; select specific component instances.
-- Create C# scripts, refresh assets, save scenes, create and spawn prefab assets, create and assign materials.
-- Request Play/Stop, inspect heartbeat/errors, and undo individual edits.
-- Open **Tools > Local Unity Bridge > Connection** for live status, recent client activity, the last command, compilation/import state, and errors.
-
-This is an early prototype, tested on **Unity 6.5 / 6000.5.2f1 on Windows**. It is a file-based bridge, not an MCP server and not a complete replacement for every Unity editor API. Scripts still compile normally. No OpenAI API key or network server is required.
-
-## Install
-
-1. Download and extract this repository.
-2. In Unity, open **Window > Package Management > Package Manager**.
-3. Choose **Install package from disk** and select `UnityBridge/package.json` from the extracted folder. Keep that folder on disk.
-4. Alternatively, copy `UnityBridge/Editor` into `Assets/UnityLiveBridge/Editor` (install only one copy).
-5. Let Unity compile. The bridge starts automatically and writes `.codex-bridge/status.json` in your project root.
-
-Once hosted on GitHub, you can also install using this Git URL in Package Manager:
+In Unity Package Manager, choose **Install package from Git URL**:
 
 ```text
 https://github.com/onlogical/gpt-unity-live-editing.git?path=/UnityBridge
 ```
 
-## Use from PowerShell
+Or download this repository and install `UnityBridge/package.json` from disk. Keep the downloaded folder in place. For a manual Assets install, copy **both** `UnityBridge/Editor` and `UnityBridge/Runtime` into `Assets/UnityLiveBridge`; install only one copy.
+
+Let Unity compile, then open **Tools > Local Unity Bridge > Connection**. The panel shows recent client activity, queue depth, compilation/import state, last command/result, and errors. Connected means a command arrived in the last 30 seconds, not a persistent network connection.
+
+## Connect an assistant through MCP
+
+Install Node.js 20 or later, then run from the downloaded repository:
+
+```text
+npm ci --prefix mcp --ignore-scripts
+```
+
+Add a local stdio server in your MCP host. The host must launch:
+
+```text
+node /absolute/path/to/gpt-unity-live-editing/mcp/server.mjs --project /absolute/path/to/UnityProject
+```
+
+A typical host configuration is in [examples/mcp.json](examples/mcp.json); replace its placeholder paths. Configuration location and syntax depend on your host. Restart/reconnect that server after editing its settings. Unity must remain open, with this package installed in the selected project.
+
+The server advertises named tools for objects, components, Inspector fields, scripts, prefabs, materials, Play/Stop and the demo, plus:
+
+- `unity_status`: read heartbeat, Unity version, queue depth and errors without waiting behind edits.
+- `unity_batch`: apply scene edits as one Undo operation; roll back the batch if a step fails.
+- `unity_submit`: queue work and return its ID immediately.
+- `unity_result`: inspect that ID's final outcome.
+- `unity_cancel`: request cancellation by ID.
+
+## What can be edited
+
+Create primitives or empty objects; move, scale, rotate, rename, duplicate, delete and parent objects; add components; inspect and edit serialized fields; create and assign materials; save and spawn prefabs; create C# scripts; refresh imports; save scenes; start/stop Play mode; Undo.
+
+Use hierarchy results to get object IDs. Inspect an object to obtain `componentDetails` and exact serialized property paths. IDs can change after scene reloads.
+
+Select a component by `componentId` or by fully qualified `componentType` plus zero-based `componentIndex`. Supported Inspector values: integers, floats, booleans, strings, enums, Vector3, colors, LayerMasks, asset/scene references, array/list sizes and elements. `editable` is Unity's flag; `supported` indicates bridge support for writing the type.
+
+`set_property` uses a string `value`: a number, enum name, text, JSON vector/color, asset path, or `"null"` to clear a reference. Use `referenceId` instead for a scene GameObject/component. Invalid reference types are rejected without applying the edit. For arrays/lists, use `resize_array` on the field, then edit `field.Array.data[0]`. The size limit is 10,000.
+
+## PowerShell client
 
 ```powershell
 ./Send-UnityCommand.ps1 -ProjectPath 'C:/Projects/MyGame' -Action hierarchy
 ./Send-UnityCommand.ps1 -ProjectPath 'C:/Projects/MyGame' -Action create -ArgumentsJson '{"name":"Demo","primitive":"Cube","position":{"x":0,"y":1,"z":0},"scale":{"x":1,"y":1,"z":1}}'
+./Send-UnityCommand.ps1 -ProjectPath 'C:/Projects/MyGame' -Action inspect -ArgumentsJson '{"instanceId":"OBJECT_ID","componentType":"UnityEngine.Transform"}'
 ```
 
-Use the string `instanceId` returned by `hierarchy` when targeting an object. IDs can change after scene reloads: inspect again rather than storing them permanently.
+Use `-NoWait` to submit without waiting. Then use `-Action result -RequestId ID` or `-Action cancel -RequestId ID`. `-Action status` reads the heartbeat directly. The default wait is 45 seconds. On timeout, cancellation is requested and the error includes the request ID; inspect its result before retrying.
+
+## Batches and Undo
+
+```json
+{
+  "label": "Build a small platform",
+  "commands": [
+    { "action": "create", "name": "Platform", "primitive": "Cube", "scale": { "x": 4, "y": 0.5, "z": 4 } },
+    { "action": "rename", "instanceId": "$0", "name": "Starting Platform" }
+  ]
+}
+```
+
+Send this as `unity_batch`, or use PowerShell `-Action batch -ArgumentsJson ...`. `$0`, `$1` and `$last` refer to earlier command result IDs, and work in instanceId, componentId, parentId and referenceId fields. Successful batches are one Undo operation. Failed/cancelled batches roll back their Unity Undo scene edits. Batches accept 1..100 commands and exclude saves, script/asset writes, Play/Stop, nested batches and Undo. Effects outside Unity's Undo system, such as user component callbacks writing external files, are not transactional.
+
+## Queue, cancellation and recovery
+
+Each queued request gets its own response. Concurrent clients do not overwrite one shared reply. Files are sorted by timestamp-prefixed filename; UUID breaks ties. Keep local system clocks consistent when several clients share a project.
+
+Cancellation skips work that has not started. An active batch checks cancellation between steps and rolls its changes back. An individual synchronous Unity command cannot be interrupted halfway through: it may complete before cancellation arrives. Always inspect the final outcome.
+
+Outcomes include `completed`, `failed`, `cancelled`, `rolled_back` and `interrupted`; `pending` is not completion. A surviving processing claim without a response after an editor interruption is marked `interrupted`, never silently replayed. Its edits may already exist: inspect the scene before retrying. Completed request IDs reuse their stored result instead of executing again. These semantics do not promise filesystem durability across power failure.
+
+Response writes blocked by Windows readers are retried without repeating the edit. Pending replies survive script-domain reloads in the same editor session. Response and cancellation files are retained locally; archive/delete old records only when no client is waiting for them. Deleting stored responses also removes their duplicate-ID protection.
+
+## Try the demo
+
+In Package Manager, import **Live Editing Demo** and open its scene. The prebuilt sample uses URP. Press Play to see three rotating sculptures. Their `UnityLiveBridge.BridgeDemoSpinner` fields include speed, a scene reference and an editable string array.
+
+Alternatively choose **Tools > Local Unity Bridge > Create Demo Scene** or call `unity_demo`. This creates and saves an additional scene under `Assets/UnityLiveBridgeDemo` without closing existing scenes or overwriting an existing scene file. The generator chooses a shader for the current render pipeline. Only URP has been visually validated; the prebuilt sample uses URP materials. Its camera uses layer 30 to exclude ordinary objects from other loaded scenes. Play mode runs all loaded scenes, so isolate the sample to compare lighting/cameras.
+
+## Supported versions and testing
+
+| Environment | Verification |
+| --- | --- |
+| Unity 6000.5.2f1, Windows, URP | 32 editing checks; queue and MCP integration; file-lock and heartbeat regressions; demo animation |
+| Unity 6000.4.4f1, Windows, built-in | Clean Package Manager install and 5 batch-mode smoke checks: create, rotate, inspect, batch and grouped Undo |
+| Other Unity 6 versions | Compatibility code is included, but not verified |
+| Node.js 26 on Windows | Local client/MCP test suite passed, including real stdio handshake and tool calls |
+| macOS/Linux and Node 20/22 | Test workflow template supplied; not verified locally |
+
+Tests against Unity require a disposable project, a licensed editor, and this package installed. They create temporary fixtures, modify Undo history, briefly use Play mode, and deliberately break/fix a script to test compiler recovery. Do not run during other editing.
 
 ```powershell
-./Send-UnityCommand.ps1 -ProjectPath 'C:/Projects/MyGame' -Action add_component -ArgumentsJson '{"instanceId":"YOUR_ID","componentType":"UnityEngine.Rigidbody"}'
-./Send-UnityCommand.ps1 -ProjectPath 'C:/Projects/MyGame' -Action inspect -ArgumentsJson '{"instanceId":"YOUR_ID","componentType":"UnityEngine.Rigidbody"}'
-./Send-UnityCommand.ps1 -ProjectPath 'C:/Projects/MyGame' -Action set_property -ArgumentsJson '{"instanceId":"YOUR_ID","componentType":"UnityEngine.Rigidbody","propertyPath":"m_Mass","value":"3.5"}'
+./tests/Test-LiveBridge.ps1 -ProjectPath 'C:/Projects/DisposableGame'
+./tests/Test-ResponseLock.ps1 -ProjectPath 'C:/Projects/DisposableGame'
+./tests/Test-Client.ps1
+./tests/Test-UnityVersion.ps1 -UnityExe 'C:/Unity/6000.4.4f1/Editor/Unity.exe' -Version '6000.4.4f1'
 ```
 
-Use the exact serialized `propertyPath` returned by `inspect`; Inspector display labels can differ. Supply a fully qualified component type. Select a component with `componentId` from `componentDetails`, or `componentType` plus a zero-based `componentIndex`. Omitting the index selects the first match. `editable` is Unity's flag, while `supported` indicates whether the bridge can write that property type. Use `referenceId` for a scene GameObject/component reference, an asset path in `value` for an asset reference, or `value: "null"` to clear it. Incompatible references return an error without applying the change.
+```text
+npm test --prefix mcp
+```
 
-## Protocol
+The Node suite runs mock filesystem/client tests by default; set `UNITY_TEST_PROJECT` to an absolute open project path to enable the three live Unity/MCP integration tests. Mock tests are not Unity compatibility evidence. [examples/github-actions.yml](examples/github-actions.yml) is an optional CI template for the mock suite on three operating systems; copy it into `.github/workflows/` to enable it. Hosted Unity testing would require separate editor/license setup.
 
-Write one JSON request atomically to `.codex-bridge/request.json`. Include unique `id` and `action` strings. Read `response.json` for the same id; `ok: false` includes an error. The bundled client handles this. Only one client should send commands at a time. Local processes with write access to your project can issue commands; use trusted projects and clients.
+## File protocol
 
-Actions: `ping`, `hierarchy`, `refresh`, `create`, `create_empty`, `transform`, `add_component`, `inspect`, `set_property`, `write_script`, `save_prefab`, `save`, `play`, `stop`, `undo`, `open_panel`, `clear_errors`, `rotate`, `rename`, `duplicate`, `delete`, `parent`, `create_material`, `assign_material`, `instantiate_prefab`, `resize_array`.
+- `.codex-bridge/status.json`: heartbeat, protocolVersion 2, Unity version, errors, queue depth.
+- `queue/TIMESTAMP-REQUEST_ID.json`: atomically submitted command (`id`, `action`, arguments).
+- `processing/REQUEST_ID.json`: claimed command; not automatically replayed after interruption.
+- `responses/REQUEST_ID.json`: final result with `ok`, `outcome`, errors and returned data.
+- `cancel/REQUEST_ID.json`: cancellation marker.
 
-Additional fields:
+Request IDs must contain 1..100 letters, numbers, hyphens or underscores. Write temporary files and rename them into queue only after writing is complete. Do not reuse IDs. The old request.json/response.json single-client transport remains for compatibility but lacks the queue's per-request guarantees.
 
-| Action | Fields |
-| --- | --- |
-| create | name, primitive, position, scale |
-| create_empty | name, position |
-| transform | instanceId, position, scale |
-| add_component / inspect | instanceId, componentType; inspect also accepts componentId or componentIndex |
-| set_property | instanceId, componentId or componentType + componentIndex, propertyPath, value (string) or referenceId |
-| write_script | assetPath ending .cs, source |
-| save_prefab | instanceId, assetPath ending .prefab |
-| save | optional scenePath under Assets ending .unity |
-| rotate / rename / duplicate / delete | instanceId; rotate: rotation (world Euler angles); rename/duplicate: name |
-| parent | instanceId, parentId (empty to unparent), worldPositionStays (default true) |
-| create_material | assetPath ending .mat, optional name |
-| assign_material | instanceId, assetPath, materialIndex (default 0), optional componentId |
-| instantiate_prefab | assetPath, position, optional name |
-| resize_array | instanceId, component selector, propertyPath, arraySize (0..10000) |
+Actions and fields are defined in [mcp/actions.mjs](mcp/actions.mjs). Asset paths must be beneath Assets. Script/prefab/material creation refuses existing files; edit existing scripts with normal file tools. Persistent scene edits are blocked in Play mode. Script edits require Unity compilation; this is not code hot reload. Unity must stay open and responsive; dialogs or compilation can delay processing.
 
-`write_script` and `save_prefab` refuse to overwrite existing files. Edit existing scripts through normal file tools. Explicitly supply scale for transform requests. Persistent scene mutations are blocked during Play mode; undo should only be used in Edit mode. Create/transform/Inspector/component operations record Unity Undo entries. Asset creation and script writes do not.
-
-The editor polls every 250 ms. Unity must be open and responsive; compilation or dialogs delay requests. A timeout does not cancel a queued command: inspect status before retrying. Play and Stop acknowledgments confirm the transition request; check later `status.json` for the settled state. Captured errors cover the current editor domain and reset after recompilation. Historical compile errors are in Unity's editor log.
-
-## Validation
-
-Version 0.2.0 was tested live in Unity 6000.5.2f1 on Windows: 32 automated checks cover object actions, Undo, prefab/material workflows, multiple component selection, arrays/lists, scene references, invalid input, Play mode restrictions, and compiler-error recovery. Separate regressions verify locked-response retries without repeating object creation and stale-heartbeat rejection before sending commands. The connection panel was visually checked in Unity. Broader Unity versions and all property types have not been validated.
-
-Run `./tests/Test-LiveBridge.ps1 -ProjectPath "C:/Projects/MyGame"` against a disposable Edit-mode project with the bridge installed. It creates temporary fixture objects/assets, deliberately triggers and repairs a compiler error, enters/exits Play mode, and cleans up its own fixtures. The test changes Undo history and leaves the scene dirty; do not run during other editing.
+This local tool can modify project files and scene objects. Any local process with project-folder write access can issue commands; use trusted clients/projects. The bridge is not a sandbox for untrusted code. It does not expose every Unity editor API.
 
 ## Contributing
 
-Submit focused issues or pull requests with your Unity version, a minimal command, and expected versus observed behavior. Avoid credentials and private project files in reports. Keep real-time editing on the bridge; desktop automation is not required.
-
-### Arrays and lists
-
-Inspect a component to find array property paths. Use `resize_array` on the array/list path (for example `numbers`), then `set_property` on a specific element such as `numbers.Array.data[1]`. Elements use the same value/reference rules as ordinary fields. Nested struct fields can use their full serialized paths. Arrays larger than 10,000 elements are rejected.
-
-### Connection status
-
-The panel calls the client connected when a command was received in the last 30 seconds; this is recent activity, not a persistent socket connection. Status survives script reloads for the last command. Error capture restarts after successful recompilation. During compilation, the existing loaded bridge reports progress as a compiling state and collects compiler errors. It cannot run if its own initial installation fails to compile.
-
-Run `./tests/Test-ResponseLock.ps1 -ProjectPath "C:/Projects/MyGame"` for the Windows file-lock regression. Run `./tests/Test-Client.ps1` for the standalone UTC heartbeat regression.
+Submit focused issues or pull requests with the Unity version, a minimal command, and expected versus observed behavior. Avoid credentials and private project files in reports. See [CHANGELOG.md](CHANGELOG.md) for release history.

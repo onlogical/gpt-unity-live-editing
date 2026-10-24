@@ -38,6 +38,7 @@ public class BridgeWindow : EditorWindow
         bool active = DateTime.TryParse(status.lastCommandAt,out var time) && (DateTime.UtcNow - time.ToUniversalTime()).TotalSeconds < 30;
         EditorGUILayout.LabelField("Client",active ? "Connected · recent command" : "Waiting for commands");
         EditorGUILayout.LabelField("Transport","Local files · 250 ms");
+        EditorGUILayout.LabelField("Queued commands",status.queueDepth.ToString());
         EditorGUILayout.LabelField("Last command",string.IsNullOrEmpty(status.lastAction) ? "None yet" : status.lastAction);
         EditorGUILayout.LabelField("Result",string.IsNullOrEmpty(status.lastAction) ? "—" : status.lastCommandOk ? "Succeeded" : "Failed");
         EditorGUILayout.SelectableLabel(status.lastCommandId ?? "",GUILayout.Height(18));
